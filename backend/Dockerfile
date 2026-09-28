@@ -11,6 +11,8 @@ RUN pip install --no-cache-dir uv \
     && uv sync --frozen --no-dev
 
 COPY app ./app
+COPY alembic.ini alembic.ini
+COPY alembic ./alembic
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 

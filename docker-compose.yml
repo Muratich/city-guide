@@ -16,6 +16,17 @@ services:
       retries: 10
     restart: unless-stopped
 
+  migrate:
+    build:
+      context: ./backend
+    entrypoint: ["/app/.venv/bin/python", "-m", "alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-city_guide}:${POSTGRES_PASSWORD:-city_guide}@postgres:5432/${POSTGRES_DB:-city_guide}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   api:
     build:
       context: ./backend
@@ -24,8 +35,8 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   frontend:
