@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -5,21 +7,33 @@ from app.main import app
 client = TestClient(app)
 
 
+def unique(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
+
+
 def test_crud_and_business_logic() -> None:
+    category_name = unique("Category")
+    city_name = unique("City")
+    other_city_name = unique("OtherCity")
+    place1_name = unique("Place1")
+    place2_name = unique("Place2")
+    other_place_name = unique("PlaceOther")
+    plan_name = unique("Plan")
+
     city_id = None
     other_city_id = None
     category_id = None
     try:
         category = client.post(
             "/api/categories",
-            json={"name": "Museum", "description": "expo"},
+            json={"name": category_name, "description": "expo"},
         )
         assert category.status_code == 201
         category_id = category.json()["id"]
 
         city = client.post(
             "/api/cities",
-            json={"name": "Moscow", "country": "RU", "description": "capital"},
+            json={"name": city_name, "country": "RU", "description": "capital"},
         )
         assert city.status_code == 201
         city_id = city.json()["id"]
@@ -29,8 +43,8 @@ def test_crud_and_business_logic() -> None:
             json={
                 "city_id": city_id,
                 "category_id": category_id,
-                "name": "Tretyakov",
-                "address": "Lavrushinsky 10",
+                "name": place1_name,
+                "address": "Test address 1",
                 "price_level": 2,
             },
         ).json()
@@ -39,8 +53,8 @@ def test_crud_and_business_logic() -> None:
             json={
                 "city_id": city_id,
                 "category_id": category_id,
-                "name": "Gorky Park",
-                "address": "Krymsky Val",
+                "name": place2_name,
+                "address": "Test address 2",
                 "price_level": 1,
             },
         ).json()
@@ -68,7 +82,7 @@ def test_crud_and_business_logic() -> None:
             "/api/trip-plans",
             json={
                 "city_id": city_id,
-                "name": "Weekend",
+                "name": plan_name,
                 "start_date": "2026-05-01",
                 "end_date": "2026-05-03",
             },
@@ -93,7 +107,7 @@ def test_crud_and_business_logic() -> None:
 
         other_city = client.post(
             "/api/cities",
-            json={"name": "Saint Petersburg", "country": "RU"},
+            json={"name": other_city_name, "country": "RU"},
         ).json()
         other_city_id = other_city["id"]
         other_place = client.post(
@@ -101,8 +115,8 @@ def test_crud_and_business_logic() -> None:
             json={
                 "city_id": other_city_id,
                 "category_id": category_id,
-                "name": "Hermitage",
-                "address": "Palace Square 2",
+                "name": other_place_name,
+                "address": "Test address 3",
                 "price_level": 2,
             },
         ).json()
@@ -130,7 +144,7 @@ def test_crud_and_business_logic() -> None:
             "/api/trip-plans",
             json={
                 "city_id": city_id,
-                "name": "Broken",
+                "name": unique("Broken"),
                 "start_date": "2026-05-10",
                 "end_date": "2026-05-01",
             },
