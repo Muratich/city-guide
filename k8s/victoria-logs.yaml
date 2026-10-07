@@ -1,0 +1,151 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: victoria-logs-data
+  namespace: cityguide
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: victoria-logs
+  namespace: cityguide
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: victoria-logs
+  template:
+    metadata:
+      labels:
+        app: victoria-logs
+    spec:
+      containers:
+        - name: victoria-logs
+          image: victoriametrics/victoria-logs:v1.53.0
+          args:
+            - -storageDataPath=/victoria-logs-data
+            - -retentionPeriod=7d
+          ports:
+            - name: http
+              containerPort: 9428
+          volumeMounts:
+            - name: data
+              mountPath: /victoria-logs-data
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: victoria-logs-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: victoria-logs
+  namespace: cityguide
+spec:
+  selector:
+    app: victoria-logs
+  ports:
+    - name: http
+      port: 9428
+      targetPort: http
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vlagent
+  namespace: cityguide
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cityguide-vlagent
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cityguide-vlagent
+subjects:
+  - kind: ServiceAccount
+    name: vlagent
+    namespace: cityguide
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cityguide-vlagent
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: vlagent
+  namespace: cityguide
+spec:
+  selector:
+    matchLabels:
+      app: vlagent
+  template:
+    metadata:
+      labels:
+        app: vlagent
+    spec:
+      serviceAccountName: vlagent
+      containers:
+        - name: vlagent
+          image: victoriametrics/vlagent:v1.53.0
+          args:
+            - -kubernetesCollector
+            - -loggerFormat=json
+            - -remoteWrite.url=http://victoria-logs:9428/insert/native
+            - -tmpDataPath=/var/lib/vlagent
+            - -envflag.enable
+            - -kubernetesCollector.excludeFilter=kubernetes.pod_name:=%{HOSTNAME}
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          volumeMounts:
+            - name: var-log
+              mountPath: /var/log
+              readOnly: true
+            - name: var-lib
+              mountPath: /var/lib
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/vlagent
+      volumes:
+        - name: var-log
+          hostPath:
+            path: /var/log
+            type: Directory
+        - name: var-lib
+          hostPath:
+            path: /var/lib
+            type: Directory
+        - name: state
+          hostPath:
+            path: /var/lib/vlagent
+            type: DirectoryOrCreate
