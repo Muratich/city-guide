@@ -13,6 +13,7 @@ RUN pip install --no-cache-dir uv \
 COPY app ./app
 COPY alembic.ini alembic.ini
 COPY alembic ./alembic
+COPY logging.json ./logging.json
 COPY docker-entrypoint.sh ./
 RUN chmod +x docker-entrypoint.sh
 
