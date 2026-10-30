@@ -15,8 +15,9 @@ COPY alembic.ini alembic.ini
 COPY alembic ./alembic
 COPY logging.json ./logging.json
 COPY docker-entrypoint.sh ./
-RUN chmod +x docker-entrypoint.sh
+RUN sed -i 's/\r$//' docker-entrypoint.sh \
+    && chmod +x docker-entrypoint.sh
 
-EXPOSE 8000
+EXPOSE 8000 8001
 
 ENTRYPOINT ["./docker-entrypoint.sh"]

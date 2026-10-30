@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-prober
+  namespace: cityguide
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: api-prober
+  template:
+    metadata:
+      labels:
+        app: api-prober
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8001"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: prober
+          image: city-prober:lf
+          imagePullPolicy: IfNotPresent
+          command: ["/app/.venv/bin/python", "-m", "app.prober"]
+          env:
+            - name: PROBE_TARGET_URL
+              value: "http://api.cityguide.svc.cluster.local:8000/health"
+            - name: PROBE_INTERVAL_SECONDS
+              value: "15"
+            - name: PROBE_TIMEOUT_SECONDS
+              value: "3"
+          ports:
+            - name: metrics
+              containerPort: 8001
+          readinessProbe:
+            tcpSocket:
+              port: metrics
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: metrics
+            periodSeconds: 20

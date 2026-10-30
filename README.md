@@ -34,7 +34,7 @@
 
 ### Инфраструктура
 
-Весь проект запускается через Docker Compose и состоит из PostgreSQL, отдельного процесса миграций, API и frontend.
+Весь проект запускается через Docker Compose: PostgreSQL, миграции, API, frontend, пробер, PostgreSQL exporter, VictoriaMetrics и vmagent.
 
 ---
 
@@ -165,7 +165,7 @@ city-guide/
 
 # Docker Compose
 
-Проект состоит из четырёх основных сервисов.
+Compose поднимает приложение, базу, экспортёр базы и мониторинг.
 
 |Сервис|Назначение|
 |---|---|
@@ -173,6 +173,10 @@ city-guide/
 |`migrate`|Одноразовое применение миграций Alembic|
 |`api`|FastAPI и Uvicorn|
 |`frontend`|Сборка Vite и раздача статических файлов через Nginx|
+|`api-prober`|Проверка API и экспорт синтетических метрик|
+|`postgres-exporter`|Метрики PostgreSQL|
+|`victoriametrics`|Хранение метрик|
+|`vmagent`|Сбор и отправка метрик в VictoriaMetrics|
 
 Сервис `migrate` выполняет `alembic upgrade head` и завершается после успешного выполнения. Завершение с кодом `0` является штатным состоянием. Сервис `api` запускается только после успешного завершения `migrate`.
 
@@ -189,7 +193,7 @@ city-guide/
 |`POSTGRES_PASSWORD`|Пароль PostgreSQL|`city_guide`|
 |`DATABASE_URL`|URL подключения backend и Alembic|PostgreSQL URL из Compose|
 |`CORS_ORIGINS`|Разрешённые frontend origin|локальные адреса на порту 5173|
-|`VITE_API_URL`|Базовый URL API для frontend|`http://localhost:8000/api`|
+|`VITE_API_URL`|Базовый URL API для frontend|`/api` через Nginx proxy|
 
 ---
 
@@ -197,10 +201,10 @@ city-guide/
 
 ## Docker Compose
 
-Для запуска полного приложения используется Docker Compose.
+Для запуска приложения и мониторинга используется Docker Compose.
 
 ```
-docker compose up -d
+docker compose up -d --build
 ```
 
 После запуска доступны следующие сервисы:
@@ -210,10 +214,16 @@ docker compose up -d
 |Web-интерфейс|`http://localhost:5173`|
 |Swagger / OpenAPI|`http://localhost:8000/docs`|
 |Healthcheck API|`http://localhost:8000/health`|
+|Пробер|`http://localhost:8001/metrics`|
+|PostgreSQL exporter|`http://localhost:9187/metrics`|
+|VictoriaMetrics UI|`http://localhost:8428/vmui/`|
+|vmagent targets|`http://localhost:8429/targets`|
 
 Состояние контейнеров можно проверить через `docker compose ps`.
 
 Логи API доступны через `docker compose logs -f api`.
+
+Остановить Compose-сервисы, сохранив данные PostgreSQL и VictoriaMetrics в volumes, можно командой `docker compose down`.
 
 ---
 
@@ -248,45 +258,35 @@ docker compose up -d
 
 # Kubernetes / Minikube
 
-Манифесты в `k8s/` разворачивают приложение в namespace `cityguide`: PostgreSQL с PVC, API, frontend и Ingress. Миграция запускается init-контейнером API до старта сервера. Образы `city-backend:latest` и `city-frontend:latest` должны быть собраны и доступны именно в используемом Minikube-кластере. Команда сборки ниже делает это напрямую и не требует отдельного `docker push`.
+Манифесты в `k8s/` разворачивают приложение в namespace `cityguide`: PostgreSQL с PVC, API, frontend и Ingress. Миграция запускается init-контейнером API до старта сервера. Имена образов при сборке должны совпадать с манифестами: `city-backend:lf` и `city-frontend:api-proxy`.
 
 ## Запуск приложения
 
-Установите Minikube и `kubectl`. Соберите образы и загрузите их в Minikube:
+Установите Minikube, `kubectl` и Helm. Скрипт соберёт образы прямо в Minikube, применит манифесты приложения, пробера, VictoriaLogs и VictoriaMetrics, дождётся готовности и поднимет port-forward’ы в фоне:
 
 ```powershell
-minikube start
-minikube addons enable ingress
-docker build -t city-backend:latest ./backend
-docker build -t city-frontend:latest --build-arg VITE_API_URL=/api ./frontend
-minikube image load city-backend:latest city-frontend:latest
+.\scripts\start-minikube.ps1
 ```
 
-Примените ресурсы в указанном порядке:
+Скрипт открывает следующие адреса:
+
+- `http://localhost:8080` — frontend;
+- `http://localhost:8000/docs` — API;
+- `http://localhost:8001/metrics` — метрики пробера;
+- `http://localhost:9187/metrics` — метрики PostgreSQL;
+- `http://localhost:8428/vmui/` — VictoriaMetrics;
+- `http://localhost:8429/targets` — vmagent;
+- `http://localhost:9428/select/vmui/` — VictoriaLogs.
+
+Для остановки только запущенных скриптом port-forward’ов используйте `.\scripts\stop-port-forwards.ps1`. Сам кластер Minikube при этом остаётся запущенным. Nginx frontend пересылает `/api/` внутреннему Service API.
+
+После изменения исходников соберите образ заново и загрузите его в Minikube. Если тег образа не менялся, перезапустите Deployment, чтобы Pod использовал обновлённый локальный образ:
 
 ```powershell
-kubectl apply -f k8s/namespace.yaml
-kubectl apply -f k8s/configmap.yaml -f k8s/secret.yaml -f k8s/pvc.yaml
-kubectl apply -f k8s/postgres.yaml
-kubectl apply -f k8s/api.yaml -f k8s/frontend.yaml
-kubectl apply -f k8s/ingress.yaml
-kubectl apply -f k8s/victoria-logs.yaml
-kubectl -n cityguide rollout status deployment/postgres
-kubectl -n cityguide rollout status deployment/api
-kubectl -n cityguide rollout status deployment/frontend
-kubectl -n cityguide rollout status deployment/victoria-logs
-kubectl -n cityguide rollout status daemonset/vlagent
+kubectl -n cityguide rollout restart deployment/api
 ```
 
-Откройте адрес ingress:
-
-```powershell
-minikube ip
-```
-
-Ingress controller должен быть включён в Minikube, чтобы пользоваться Ingress-адресом. Для простого локального запуска пробросьте frontend: `kubectl -n cityguide port-forward svc/frontend 8080:80`; страница откроется на `http://localhost:8080`. Nginx frontend пересылает `/api/` внутреннему Service API. В Minikube на Hyper-V команды управления Minikube могут требовать PowerShell от имени администратора.
-
-После изменения исходников или build args соберите образы заново. `imagePullPolicy: IfNotPresent` намеренно позволяет Minikube использовать собранные локально образы. При зависшем запуске смотрите `kubectl -n cityguide get pods`, `kubectl -n cityguide describe pod <имя-пода>` и `kubectl -n cityguide logs <имя-пода> --all-containers`.
+`imagePullPolicy: IfNotPresent` позволяет использовать образы из Minikube. При зависшем запуске смотрите `kubectl -n cityguide get pods`, `kubectl -n cityguide describe pod <имя-пода>` и `kubectl -n cityguide logs <имя-пода> --all-containers`.
 
 ## VictoriaLogs и доставка логов
 
@@ -308,6 +308,56 @@ kubectl -n cityguide get pods,pvc,svc
 ```
 
 Для обновления повторно примените манифест командой `kubectl apply -f k8s/victoria-logs.yaml`. PVC VictoriaLogs удаляйте отдельно только если сохранённые логи больше не нужны.
+
+## VictoriaMetrics и метрики приложения
+
+API отдаёт по `/metrics` данные в формате OpenMetrics 1.0: Instrumentator считает HTTP-запросы, отдельные SLI-метрики API считают успешные/неуспешные запросы и их длительность, а стандартные collectors `prometheus-client` добавляют метрики Python-процесса. Запросы `/health` и `/metrics` исключены из HTTP-счётчиков. Четыре бизнес-счётчика увеличиваются после успешного сохранения города, места, посещения или плана поездки; они показывают активность, но не используются для оценки доступности, так как не считают неуспешные попытки. PostgreSQL exporter работает в том же Pod, что и база, и отдаёт её метрики на порту `9187`.
+
+VictoriaMetrics Single устанавливается Helm chart’ом, а `vmagent` обнаруживает Pod’ы namespace `cityguide` и скрейпит только те, у которых есть аннотация `prometheus.io/scrape: "true"`. Настройки VictoriaMetrics находятся в [k8s/victoria-metrics-values.yaml](k8s/victoria-metrics-values.yaml), манифест агента и service discovery — в [k8s/vmagent.yaml](k8s/vmagent.yaml).
+
+`scripts/start-minikube.ps1` устанавливает VictoriaMetrics и vmagent автоматически. Если настраиваете мониторинг вручную, из корня репозитория выполните:
+
+```powershell
+helm repo add vm https://victoriametrics.github.io/helm-charts/
+helm repo update
+helm upgrade --install vm-single vm/victoria-metrics-single `
+  --namespace monitoring `
+  --create-namespace `
+  --values .\k8s\victoria-metrics-values.yaml
+kubectl apply -f .\k8s\vmagent.yaml
+kubectl rollout restart deployment/vmagent -n monitoring
+kubectl rollout status statefulset/vm-single-victoria-metrics-single-server -n monitoring
+kubectl rollout status deployment/vmagent -n monitoring
+```
+
+Команды устанавливают VictoriaMetrics в namespace `monitoring` и применяют `vmagent`. Метрики API, пробера и PostgreSQL собираются автоматически по scrape-аннотациям Pod’ов. При ручной установке разверните пробер отдельно:
+
+```powershell
+kubectl apply -f .\k8s\prober.yaml
+kubectl rollout status deployment/api-prober -n cityguide
+```
+
+Формулы SLI/SLO/SLA и готовые PromQL-запросы приведены в [Отчёт.md](Отчёт.md).
+
+Проверьте компоненты и обнаруженные цели:
+
+```powershell
+kubectl get pods -n monitoring
+kubectl get svc -n monitoring
+kubectl port-forward -n monitoring svc/vmagent 8429:8429
+```
+
+Откройте `http://localhost:8429/targets` и проверьте, что API и PostgreSQL exporter имеют статус `UP`. Это подтверждает доступность endpoint’ов; для проверки подключения экспортера к базе запросите `pg_up` в VictoriaMetrics. В отдельном окне пробросьте VictoriaMetrics и запросите метрики:
+
+```powershell
+kubectl port-forward -n monitoring svc/vm-single-victoria-metrics-single-server 8428:8428
+curl.exe "http://localhost:8428/api/v1/label/__name__/values"
+curl.exe "http://localhost:8428/api/v1/query?query=up"
+curl.exe "http://localhost:8428/api/v1/query?query=cityguide_cities_created_total"
+curl.exe "http://localhost:8428/api/v1/query?query=pg_up"
+```
+
+Подробное описание стека и четырёх бизнес-метрик приведено в [Отчёт.md](Отчёт.md). Скринкаст проверки можно записать после запуска Minikube и успешного сбора метрик.
 
 ## Оценка манифестов и 12 факторов
 

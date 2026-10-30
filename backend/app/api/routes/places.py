@@ -3,6 +3,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.metrics import places_created
 from app.models import Place, Visit
 from app.schemas.filters import PlaceFilters
 from app.schemas.place import PlaceCreate, PlaceOut, PlaceUpdate
@@ -42,6 +43,7 @@ def create_place(payload: PlaceCreate, db: Session = Depends(get_db)):
     db.add(place)
     db.commit()
     db.refresh(place)
+    places_created.inc()
     return place
 
 

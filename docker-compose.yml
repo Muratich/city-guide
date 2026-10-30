@@ -16,6 +16,19 @@ services:
       retries: 10
     restart: unless-stopped
 
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
+    environment:
+      DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB:-city_guide}?sslmode=disable
+      DATA_SOURCE_USER: ${POSTGRES_USER:-city_guide}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD:-city_guide}
+    ports:
+      - "9187:9187"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   migrate:
     build:
       context: ./backend
@@ -34,21 +47,76 @@ services:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-city_guide}:${POSTGRES_PASSWORD:-city_guide}@postgres:5432/${POSTGRES_DB:-city_guide}
     ports:
       - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=2)
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       migrate:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  api-prober:
+    build:
+      context: ./backend
+    entrypoint: ["/app/.venv/bin/python", "-m", "app.prober"]
+    environment:
+      PROBE_TARGET_URL: http://api:8000/health
+      PROBE_INTERVAL_SECONDS: "15"
+      PROBE_TIMEOUT_SECONDS: "3"
+    ports:
+      - "8001:8001"
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000/api}
+        VITE_API_URL: /api
     ports:
       - "5173:80"
     depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.154.0
+    command:
+      - -storageDataPath=/storage
+      - -retentionPeriod=7d
+      - -httpListenAddr=:8428
+    ports:
+      - "8428:8428"
+    volumes:
+      - victoriametrics_data:/storage
+    restart: unless-stopped
+
+  vmagent:
+    image: victoriametrics/vmagent:v1.154.0
+    command:
+      - -promscrape.config=/etc/vmagent/promscrape.yml
+      - -remoteWrite.url=http://victoriametrics:8428/api/v1/write
+    ports:
+      - "8429:8429"
+    volumes:
+      - ./monitoring/docker-promscrape.yml:/etc/vmagent/promscrape.yml:ro
+    depends_on:
+      - victoriametrics
       - api
+      - api-prober
+      - postgres-exporter
     restart: unless-stopped
 
 volumes:
   postgres_data:
+  victoriametrics_data:

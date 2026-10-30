@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.metrics import cities_created
 from app.models import City
 from app.schemas.city import CityCreate, CityOut, CityUpdate
 
@@ -20,6 +21,7 @@ def create_city(payload: CityCreate, db: Session = Depends(get_db)):
     db.add(city)
     db.commit()
     db.refresh(city)
+    cities_created.inc()
     return city
 
 
