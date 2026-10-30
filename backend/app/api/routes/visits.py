@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.metrics import visits_created
 from app.models import Visit
 from app.schemas.visit import VisitCreate, VisitOut, VisitUpdate
 
@@ -28,6 +29,7 @@ def create_visit(payload: VisitCreate, db: Session = Depends(get_db)):
     db.add(visit)
     db.commit()
     db.refresh(visit)
+    visits_created.inc()
     return visit
 
 

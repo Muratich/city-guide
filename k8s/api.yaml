@@ -12,6 +12,10 @@ spec:
     metadata:
       labels:
         app: api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
     spec:
       initContainers:
         - name: migrate
@@ -29,7 +33,8 @@ spec:
           image: city-backend:lf
           imagePullPolicy: IfNotPresent
           ports:
-            - containerPort: 8000
+            - name: http
+              containerPort: 8000
           env:
             - name: DATABASE_URL
               valueFrom:

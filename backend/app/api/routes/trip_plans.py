@@ -3,6 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.metrics import trip_plans_created
 from app.models import TripPlan
 from app.schemas.trip_item import TripItemOut
 from app.schemas.trip_plan import TripPlanCreate, TripPlanOut, TripPlanUpdate
@@ -21,6 +22,7 @@ def create_trip_plan(payload: TripPlanCreate, db: Session = Depends(get_db)):
     db.add(plan)
     db.commit()
     db.refresh(plan)
+    trip_plans_created.inc()
     return plan
 
 

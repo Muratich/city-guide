@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: city-frontend:latest
+          image: city-frontend:api-proxy
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 80
