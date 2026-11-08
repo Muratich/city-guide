@@ -359,6 +359,87 @@ curl.exe "http://localhost:8428/api/v1/query?query=pg_up"
 
 Подробное описание стека и четырёх бизнес-метрик приведено в [Отчёт.md](Отчёт.md). Скринкаст проверки можно записать после запуска Minikube и успешного сбора метрик.
 
+## Алерты и проверка уведомлений
+
+`vmalert` вычисляет четыре правила из [k8s/vmalert.yaml](k8s/vmalert.yaml) каждые 15 секунд. Правила отслеживают долю ответов 5xx, p95 задержки API, память и CPU процесса API. У каждого правила условие должно выполняться 5 минут (`for: 5m`). `vmalert` отправляет сработавшие алерты в Alertmanager из [k8s/alertmanager.yaml](k8s/alertmanager.yaml). Alertmanager группирует их по имени алерта и отправляет email в Mailpit, описанный в [k8s/mailpit.yaml](k8s/mailpit.yaml). Mailpit принимает письма локально и не пересылает их во внешний почтовый ящик.
+
+При полном запуске проекта новые манифесты применяет `scripts/start-minikube.ps1`. Если City Guide и VictoriaMetrics уже запущены, но компоненты алертинга ещё не установлены, примените их вручную из корня репозитория:
+
+```powershell
+kubectl apply -f .\k8s\mailpit.yaml -f .\k8s\alertmanager.yaml -f .\k8s\vmalert.yaml
+kubectl -n monitoring rollout status deployment/mailpit
+kubectl -n monitoring rollout status deployment/alertmanager
+kubectl -n monitoring rollout status deployment/vmalert
+```
+
+Для ручной проверки откройте интерфейсы:
+
+- `http://localhost:8880` — группы и состояния правил vmalert;
+- `http://localhost:9093` — принятые Alertmanager алерты;
+- `http://localhost:8025` — письма в Mailpit;
+- `http://localhost:8428/vmui/` — запросы к метрикам VictoriaMetrics.
+
+Скрейп метрик API можно проверить запросами:
+
+```promql
+cityguide_api_requests_total
+cityguide_api_request_duration_seconds_bucket
+process_resident_memory_bytes{kubernetes_namespace="cityguide", kubernetes_pod_name=~"api-[a-z0-9]+-[a-z0-9]+"}
+rate(process_cpu_seconds_total{kubernetes_namespace="cityguide", kubernetes_pod_name=~"api-[a-z0-9]+-[a-z0-9]+"}[5m])
+```
+
+В vmalert правило `pending` означает, что PromQL-условие истинно, но ещё не выдержало `for: 5m`. После пяти минут оно переходит в `firing`; Alertmanager отправляет уведомление, которое появляется в Mailpit.
+
+### Быстрая демонстрация срабатывания
+
+Условия по ошибкам и задержке требуют достаточно частых запросов. Память и CPU при обычной нагрузке могут оставаться ниже порогов. Для короткой демонстрации временно измените только проверяемое правило в `k8s/vmalert.yaml`, примените манифест и перезапустите vmalert:
+
+```powershell
+kubectl apply -f .\k8s\vmalert.yaml
+kubectl -n monitoring rollout restart deployment/vmalert
+kubectl -n monitoring rollout status deployment/vmalert
+```
+
+Примеры временных значений:
+
+| Правило | Временное изменение для демонстрации |
+|---|---|
+| `CityGuideHighServerErrorRate` | В обеих частях выражения заменить окно `[5m]` на `[1m]`, `for: 5m` на `for: 15s` |
+| `CityGuideHighApiLatency` | Заменить порог `> 1` на `> 0.001`, окна `[5m]` на `[1m]`, `for: 5m` на `for: 15s` |
+| `CityGuideHighProcessMemory` | Заменить порог `524288000` на `52428800` (50 MiB), `for: 5m` на `for: 15s` |
+| `CityGuideHighProcessCpu` | Заменить порог `> 0.8` на `> 0.001`, окно `[5m]` на `[1m]`, `for: 5m` на `for: 15s` |
+
+Чтобы создать 5xx без отключения PostgreSQL, отправьте запрос создания города, а затем повторяйте тот же запрос: повтор нарушает ограничение уникальности и API возвращает 500. Для примера ниже имя города уникальное для запуска; первое обращение создаёт запись, последующие дают ошибки:
+
+```powershell
+$body = @{ name = "AlertDemo-$(Get-Date -Format yyyyMMddHHmmss)"; country = "Test" } | ConvertTo-Json
+$city = Invoke-RestMethod -Uri 'http://localhost:8000/api/cities' -Method Post -ContentType 'application/json' -Body $body
+
+1..150 | ForEach-Object {
+    try {
+        Invoke-WebRequest -Uri 'http://localhost:8000/api/cities' -Method Post -ContentType 'application/json' -Body $body | Out-Null
+    } catch {}
+    Start-Sleep -Milliseconds 500
+}
+```
+
+Для проверки задержки и CPU отправьте серию запросов к API:
+
+```powershell
+1..180 | ForEach-Object {
+    Invoke-WebRequest -Uri 'http://localhost:8000/api/cities' | Out-Null
+    Start-Sleep -Milliseconds 500
+}
+```
+
+Для проверки памяти дополнительная нагрузка не нужна: при временном пороге 50 MiB процесс API обычно уже выше него. Следите за состоянием правила в vmalert и письмом в Mailpit. После демонстрации верните рабочие значения из таблицы ниже, снова примените `k8s/vmalert.yaml` и перезапустите vmalert. Город, созданный для проверки 5xx, можно удалить командой:
+
+```powershell
+Invoke-RestMethod -Uri "http://localhost:8000/api/cities/$($city.id)" -Method Delete
+```
+
+Рабочие значения: доля 5xx выше 5%, p95 задержки выше 1 секунды, память выше 500 MiB и CPU выше 0.8 ядра; для каждого правила — `for: 5m`. Интервалы `[5m]` и порог минимального потока запросов `> 0.1` также должны быть восстановлены в двух API-правилах.
+
 ## Оценка манифестов и 12 факторов
 
 Манифесты покрывают базовый учебный запуск, но пока не являются production-ready. Они задают Deployment/Service, Ingress, PostgreSQL PVC, probes, ConfigMap/Secret и init-контейнер миграций. Секрет содержит учебный пароль и хранится в YAML в репозитории; для реального окружения нужны внешнее управление секретами и непредсказуемые учётные данные. Не заданы requests/limits, политики безопасности, TLS, резервное копирование БД, мониторинг и масштабирование. Нет Kubernetes overlays/Helm chart для самого приложения; параметры окружения и образы в основном заданы напрямую.

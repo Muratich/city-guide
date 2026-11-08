@@ -1,0 +1,112 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cityguide-alert-rules
+  namespace: monitoring
+data:
+  alerts.yml: |
+    groups:
+      - name: cityguide
+        interval: 15s
+        rules:
+          - alert: CityGuideHighServerErrorRate
+            expr: |
+              (
+                sum(rate(cityguide_api_requests_total{outcome="bad"}[5m]))
+                /
+                sum(rate(cityguide_api_requests_total[5m]))
+              ) > 0.05
+              and
+              sum(rate(cityguide_api_requests_total[5m])) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: City Guide API has a high 5xx rate
+              description: More than 5% of API requests failed with 5xx responses for 5 minutes.
+          - alert: CityGuideHighApiLatency
+            expr: |
+              histogram_quantile(
+                0.95,
+                sum by (le) (rate(cityguide_api_request_duration_seconds_bucket[5m]))
+              ) > 1
+              and
+              sum(rate(cityguide_api_requests_total[5m])) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: City Guide API latency is high
+              description: API p95 latency is above 1 second for 5 minutes.
+          - alert: CityGuideHighProcessMemory
+            expr: process_resident_memory_bytes{job="kubernetes-pods", kubernetes_namespace="cityguide", kubernetes_pod_name=~"api-[a-z0-9]+-[a-z0-9]+"} > 524288000
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: City Guide API process uses too much memory
+              description: API process resident memory is above 500 MiB for 5 minutes.
+          - alert: CityGuideHighProcessCpu
+            expr: rate(process_cpu_seconds_total{job="kubernetes-pods", kubernetes_namespace="cityguide", kubernetes_pod_name=~"api-[a-z0-9]+-[a-z0-9]+"}[5m]) > 0.8
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: City Guide API process uses too much CPU
+              description: API process CPU usage is above 0.8 cores for 5 minutes.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmalert
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vmalert
+  template:
+    metadata:
+      labels:
+        app: vmalert
+    spec:
+      containers:
+        - name: vmalert
+          image: victoriametrics/vmalert:v1.154.0
+          args:
+            - -rule=/etc/alerts/alerts.yml
+            - -datasource.url=http://vm-single-victoria-metrics-single-server.monitoring.svc:8428
+            - -notifier.url=http://alertmanager.monitoring.svc:9093
+            - -evaluationInterval=15s
+          ports:
+            - name: web
+              containerPort: 8880
+          volumeMounts:
+            - name: rules
+              mountPath: /etc/alerts
+              readOnly: true
+          readinessProbe:
+            tcpSocket:
+              port: web
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: web
+            periodSeconds: 20
+      volumes:
+        - name: rules
+          configMap:
+            name: cityguide-alert-rules
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vmalert
+  namespace: monitoring
+spec:
+  selector:
+    app: vmalert
+  ports:
+    - name: web
+      port: 8880
+      targetPort: web

@@ -105,10 +105,14 @@ Invoke-Checked -Command 'kubectl' -Arguments @(
 )
 
 Write-Host 'Installing VictoriaMetrics and vmagent...'
-Invoke-Checked -Command 'helm' -Arguments @(
-    'repo', 'add', 'vm', 'https://victoriametrics.github.io/helm-charts/', '--force-update'
-)
-Invoke-Checked -Command 'helm' -Arguments @('repo', 'update', 'vm')
+& helm status vm-single --namespace monitoring *> $null
+$victoriaMetricsInstalled = $LASTEXITCODE -eq 0
+if (-not $victoriaMetricsInstalled) {
+    Invoke-Checked -Command 'helm' -Arguments @(
+        'repo', 'add', 'vm', 'https://victoriametrics.github.io/helm-charts/', '--force-update'
+    )
+    Invoke-Checked -Command 'helm' -Arguments @('repo', 'update', 'vm')
+}
 Invoke-Checked -Command 'helm' -Arguments @(
     'upgrade', '--install', 'vm-single', 'vm/victoria-metrics-single',
     '--namespace', 'monitoring', '--create-namespace',
@@ -116,6 +120,9 @@ Invoke-Checked -Command 'helm' -Arguments @(
 )
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\vmagent.yaml')
 Invoke-Checked -Command 'kubectl' -Arguments @('rollout', 'restart', 'deployment/vmagent', '-n', 'monitoring')
+Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\mailpit.yaml')
+Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\alertmanager.yaml')
+Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\vmalert.yaml')
 
 Write-Host 'Waiting for workloads...'
 Invoke-Checked -Command 'kubectl' -Arguments @(
@@ -142,6 +149,15 @@ Invoke-Checked -Command 'kubectl' -Arguments @(
 Invoke-Checked -Command 'kubectl' -Arguments @(
     '-n', 'monitoring', 'rollout', 'status', 'deployment/vmagent', '--timeout=180s'
 )
+Invoke-Checked -Command 'kubectl' -Arguments @(
+    '-n', 'monitoring', 'rollout', 'status', 'deployment/mailpit', '--timeout=180s'
+)
+Invoke-Checked -Command 'kubectl' -Arguments @(
+    '-n', 'monitoring', 'rollout', 'status', 'deployment/alertmanager', '--timeout=180s'
+)
+Invoke-Checked -Command 'kubectl' -Arguments @(
+    '-n', 'monitoring', 'rollout', 'status', 'deployment/vmalert', '--timeout=180s'
+)
 
 $script:forwardProcesses = @()
 Start-PortForward -Name 'frontend' -Namespace 'cityguide' -Resource 'svc/frontend' -Mapping '8080:80' -LocalPort 8080
@@ -150,6 +166,9 @@ Start-PortForward -Name 'api-prober' -Namespace 'cityguide' -Resource 'deploymen
 Start-PortForward -Name 'postgres-metrics' -Namespace 'cityguide' -Resource 'svc/postgres' -Mapping '9187:9187' -LocalPort 9187
 Start-PortForward -Name 'victoriametrics' -Namespace 'monitoring' -Resource 'svc/vm-single-victoria-metrics-single-server' -Mapping '8428:8428' -LocalPort 8428
 Start-PortForward -Name 'vmagent' -Namespace 'monitoring' -Resource 'svc/vmagent' -Mapping '8429:8429' -LocalPort 8429
+Start-PortForward -Name 'vmalert' -Namespace 'monitoring' -Resource 'svc/vmalert' -Mapping '8880:8880' -LocalPort 8880
+Start-PortForward -Name 'alertmanager' -Namespace 'monitoring' -Resource 'svc/alertmanager' -Mapping '9093:9093' -LocalPort 9093
+Start-PortForward -Name 'mailpit' -Namespace 'monitoring' -Resource 'svc/mailpit' -Mapping '8025:8025' -LocalPort 8025
 Start-PortForward -Name 'victorialogs' -Namespace 'cityguide' -Resource 'svc/victoria-logs' -Mapping '9428:9428' -LocalPort 9428
 
 $pidFile = Join-Path $env:TEMP 'city-guide-minikube-forwards.json'
@@ -163,6 +182,9 @@ Write-Host '  Prober metrics: http://localhost:8001/metrics'
 Write-Host '  DB metrics:     http://localhost:9187/metrics'
 Write-Host '  VictoriaMetrics http://localhost:8428/vmui/'
 Write-Host '  vmagent targets http://localhost:8429/targets'
+Write-Host '  vmalert:        http://localhost:8880'
+Write-Host '  Alertmanager:   http://localhost:9093'
+Write-Host '  Alert emails:   http://localhost:8025'
 Write-Host '  VictoriaLogs:   http://localhost:9428/select/vmui/'
 Write-Host 'Forward process IDs are saved in the temporary directory.'
 Write-Host 'Run .\scripts\stop-port-forwards.ps1 to stop only these port-forwards.'
