@@ -1,0 +1,19 @@
+persistence:
+  type: pvc
+  enabled: true
+  size: 2Gi
+
+adminUser: admin
+adminPassword: "admin"
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: VictoriaMetrics
+        uid: victoriametrics
+        type: prometheus
+        access: proxy
+        url: http://vm-single-victoria-metrics-single-server.monitoring.svc:8428
+        isDefault: true
+        editable: false

@@ -120,6 +120,25 @@ Invoke-Checked -Command 'helm' -Arguments @(
 )
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\vmagent.yaml')
 Invoke-Checked -Command 'kubectl' -Arguments @('rollout', 'restart', 'deployment/vmagent', '-n', 'monitoring')
+
+Write-Host 'Checking Grafana Helm release...'
+& helm status grafana --namespace monitoring *> $null
+$grafanaInstalled = $LASTEXITCODE -eq 0
+if (-not $grafanaInstalled) {
+    Invoke-Checked -Command 'helm' -Arguments @(
+        'repo', 'add', 'grafana-community', 'https://grafana-community.github.io/helm-charts/', '--force-update'
+    )
+    Invoke-Checked -Command 'helm' -Arguments @('repo', 'update', 'grafana-community')
+
+    Invoke-Checked -Command 'helm' -Arguments @(
+        'upgrade', '--install', 'grafana', 'grafana-community/grafana',
+        '--namespace', 'monitoring', '--create-namespace',
+        '--values', '.\k8s\grafana-values.yaml'
+    )
+}
+else {
+    Write-Host 'Grafana Helm release already exists; skipping repository update and installation.'
+}
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\mailpit.yaml')
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\alertmanager.yaml')
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\vmalert.yaml')
@@ -150,6 +169,9 @@ Invoke-Checked -Command 'kubectl' -Arguments @(
     '-n', 'monitoring', 'rollout', 'status', 'deployment/vmagent', '--timeout=180s'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
+    '-n', 'monitoring', 'rollout', 'status', 'deployment/grafana', '--timeout=240s'
+)
+Invoke-Checked -Command 'kubectl' -Arguments @(
     '-n', 'monitoring', 'rollout', 'status', 'deployment/mailpit', '--timeout=180s'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
@@ -165,6 +187,7 @@ Start-PortForward -Name 'api' -Namespace 'cityguide' -Resource 'svc/api' -Mappin
 Start-PortForward -Name 'api-prober' -Namespace 'cityguide' -Resource 'deployment/api-prober' -Mapping '8001:8001' -LocalPort 8001
 Start-PortForward -Name 'postgres-metrics' -Namespace 'cityguide' -Resource 'svc/postgres' -Mapping '9187:9187' -LocalPort 9187
 Start-PortForward -Name 'victoriametrics' -Namespace 'monitoring' -Resource 'svc/vm-single-victoria-metrics-single-server' -Mapping '8428:8428' -LocalPort 8428
+Start-PortForward -Name 'grafana' -Namespace 'monitoring' -Resource 'svc/grafana' -Mapping '3000:80' -LocalPort 3000
 Start-PortForward -Name 'vmagent' -Namespace 'monitoring' -Resource 'svc/vmagent' -Mapping '8429:8429' -LocalPort 8429
 Start-PortForward -Name 'vmalert' -Namespace 'monitoring' -Resource 'svc/vmalert' -Mapping '8880:8880' -LocalPort 8880
 Start-PortForward -Name 'alertmanager' -Namespace 'monitoring' -Resource 'svc/alertmanager' -Mapping '9093:9093' -LocalPort 9093
@@ -181,6 +204,7 @@ Write-Host '  API docs:       http://localhost:8000/docs'
 Write-Host '  Prober metrics: http://localhost:8001/metrics'
 Write-Host '  DB metrics:     http://localhost:9187/metrics'
 Write-Host '  VictoriaMetrics http://localhost:8428/vmui/'
+Write-Host '  Grafana:        http://localhost:3000'
 Write-Host '  vmagent targets http://localhost:8429/targets'
 Write-Host '  vmalert:        http://localhost:8880'
 Write-Host '  Alertmanager:   http://localhost:9093'
