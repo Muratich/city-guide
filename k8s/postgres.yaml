@@ -46,14 +46,20 @@ spec:
             exec:
               command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
             periodSeconds: 5
-            timeoutSeconds: 3
+            timeoutSeconds: 5
             failureThreshold: 6
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
           livenessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
             periodSeconds: 10
-            timeoutSeconds: 3
-            failureThreshold: 3
+            timeoutSeconds: 10
+            failureThreshold: 6
         - name: postgres-exporter
           image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
           imagePullPolicy: IfNotPresent
@@ -62,7 +68,7 @@ spec:
               containerPort: 9187
           env:
             - name: DATA_SOURCE_URI
-              value: "localhost:5432/cityguide?sslmode=disable"
+              value: "127.0.0.1:5432/cityguide?sslmode=disable"
             - name: DATA_SOURCE_USER
               valueFrom:
                 configMapKeyRef:
@@ -78,11 +84,22 @@ spec:
               path: /metrics
               port: metrics
             periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /metrics
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 12
           livenessProbe:
             httpGet:
               path: /metrics
               port: metrics
             periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
       volumes:
         - name: data
           persistentVolumeClaim:

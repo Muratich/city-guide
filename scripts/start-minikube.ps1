@@ -76,7 +76,6 @@ function Start-PortForward {
 
 Write-Host 'Starting Minikube...'
 Invoke-Checked -Command 'minikube' -Arguments @('start')
-Invoke-Checked -Command 'minikube' -Arguments @('addons', 'enable', 'ingress')
 Invoke-Checked -Command 'kubectl' -Arguments @('config', 'use-context', 'minikube')
 
 Write-Host 'Building application images directly in Minikube...'
@@ -90,8 +89,23 @@ Invoke-Checked -Command 'kubectl' -Arguments @(
     'apply', '-f', '.\k8s\configmap.yaml', '-f', '.\k8s\secret.yaml', '-f', '.\k8s\pvc.yaml'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\postgres.yaml')
-Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\api.yaml', '-f', '.\k8s\frontend.yaml')
-Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\ingress.yaml')
+Invoke-Checked -Command 'kubectl' -Arguments @('-n', 'cityguide', 'rollout', 'status', 'deployment/postgres', '--timeout=240s')
+Invoke-Checked -Command 'kubectl' -Arguments @('-n', 'cityguide', 'delete', 'job', 'cityguide-migrate', '--ignore-not-found')
+Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\migrate-job.yaml')
+Invoke-Checked -Command 'kubectl' -Arguments @('-n', 'cityguide', 'wait', '--for=condition=complete', 'job/cityguide-migrate', '--timeout=600s')
+Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\api.yaml', '-f', '.\k8s\api-green.yaml', '-f', '.\k8s\frontend.yaml')
+Invoke-Checked -Command 'kubectl' -Arguments @('-n', 'cityguide', 'delete', 'ingress', 'cityguide', '--ignore-not-found')
+
+Write-Host 'Installing Envoy Gateway...'
+Invoke-Checked -Command 'helm' -Arguments @(
+    'upgrade', '--install', 'eg', 'oci://docker.io/envoyproxy/gateway-helm',
+    '--version', 'v1.10.0', '--namespace', 'envoy-gateway-system', '--create-namespace'
+)
+Invoke-Checked -Command 'kubectl' -Arguments @(
+    '-n', 'envoy-gateway-system', 'rollout', 'status', 'deployment/envoy-gateway', '--timeout=300s'
+)
+Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\strategies\gateway.yaml')
+Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\strategies\rolling.yaml')
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\victoria-logs.yaml')
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\prober.yaml')
 Invoke-Checked -Command 'kubectl' -Arguments @(
@@ -105,14 +119,10 @@ Invoke-Checked -Command 'kubectl' -Arguments @(
 )
 
 Write-Host 'Installing VictoriaMetrics and vmagent...'
-& helm status vm-single --namespace monitoring *> $null
-$victoriaMetricsInstalled = $LASTEXITCODE -eq 0
-if (-not $victoriaMetricsInstalled) {
-    Invoke-Checked -Command 'helm' -Arguments @(
-        'repo', 'add', 'vm', 'https://victoriametrics.github.io/helm-charts/', '--force-update'
-    )
-    Invoke-Checked -Command 'helm' -Arguments @('repo', 'update', 'vm')
-}
+Invoke-Checked -Command 'helm' -Arguments @(
+    'repo', 'add', 'vm', 'https://victoriametrics.github.io/helm-charts/', '--force-update'
+)
+Invoke-Checked -Command 'helm' -Arguments @('repo', 'update', 'vm')
 Invoke-Checked -Command 'helm' -Arguments @(
     'upgrade', '--install', 'vm-single', 'vm/victoria-metrics-single',
     '--namespace', 'monitoring', '--create-namespace',
@@ -122,14 +132,13 @@ Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\vmagent.yam
 Invoke-Checked -Command 'kubectl' -Arguments @('rollout', 'restart', 'deployment/vmagent', '-n', 'monitoring')
 
 Write-Host 'Checking Grafana Helm release...'
+Invoke-Checked -Command 'helm' -Arguments @(
+    'repo', 'add', 'grafana-community', 'https://grafana-community.github.io/helm-charts/', '--force-update'
+)
+Invoke-Checked -Command 'helm' -Arguments @('repo', 'update', 'grafana-community')
 & helm status grafana --namespace monitoring *> $null
 $grafanaInstalled = $LASTEXITCODE -eq 0
 if (-not $grafanaInstalled) {
-    Invoke-Checked -Command 'helm' -Arguments @(
-        'repo', 'add', 'grafana-community', 'https://grafana-community.github.io/helm-charts/', '--force-update'
-    )
-    Invoke-Checked -Command 'helm' -Arguments @('repo', 'update', 'grafana-community')
-
     Invoke-Checked -Command 'helm' -Arguments @(
         'upgrade', '--install', 'grafana', 'grafana-community/grafana',
         '--namespace', 'monitoring', '--create-namespace',
@@ -137,7 +146,11 @@ if (-not $grafanaInstalled) {
     )
 }
 else {
-    Write-Host 'Grafana Helm release already exists; skipping repository update and installation.'
+    Invoke-Checked -Command 'helm' -Arguments @(
+        'upgrade', '--install', 'grafana', 'grafana-community/grafana',
+        '--namespace', 'monitoring', '--reuse-values',
+        '--values', '.\k8s\grafana-values.yaml'
+    )
 }
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\mailpit.yaml')
 Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\alertmanager.yaml')
@@ -145,44 +158,51 @@ Invoke-Checked -Command 'kubectl' -Arguments @('apply', '-f', '.\k8s\vmalert.yam
 
 Write-Host 'Waiting for workloads...'
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'cityguide', 'rollout', 'status', 'deployment/postgres', '--timeout=240s'
+    '-n', 'cityguide', 'rollout', 'status', 'deployment/postgres'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'cityguide', 'rollout', 'status', 'deployment/api', '--timeout=240s'
+    '-n', 'cityguide', 'rollout', 'status', 'deployment/api'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'cityguide', 'rollout', 'status', 'deployment/frontend', '--timeout=180s'
+    '-n', 'cityguide', 'rollout', 'status', 'deployment/api-green'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'cityguide', 'rollout', 'status', 'deployment/api-prober', '--timeout=180s'
+    '-n', 'cityguide', 'rollout', 'status', 'deployment/frontend'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'cityguide', 'rollout', 'status', 'deployment/victoria-logs', '--timeout=180s'
+    '-n', 'cityguide', 'rollout', 'status', 'deployment/api-prober'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'cityguide', 'rollout', 'status', 'daemonset/vlagent', '--timeout=180s'
+    '-n', 'cityguide', 'rollout', 'status', 'deployment/victoria-logs'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'monitoring', 'rollout', 'status', 'statefulset/vm-single-victoria-metrics-single-server', '--timeout=240s'
+    '-n', 'cityguide', 'rollout', 'status', 'daemonset/vlagent'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'monitoring', 'rollout', 'status', 'deployment/vmagent', '--timeout=180s'
+    '-n', 'monitoring', 'rollout', 'status', 'statefulset/vm-single-victoria-metrics-single-server'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'monitoring', 'rollout', 'status', 'deployment/grafana', '--timeout=240s'
+    '-n', 'monitoring', 'rollout', 'status', 'deployment/vmagent'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'monitoring', 'rollout', 'status', 'deployment/mailpit', '--timeout=180s'
+    '-n', 'monitoring', 'rollout', 'status', 'deployment/grafana'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'monitoring', 'rollout', 'status', 'deployment/alertmanager', '--timeout=180s'
+    '-n', 'monitoring', 'rollout', 'status', 'deployment/mailpit'
 )
 Invoke-Checked -Command 'kubectl' -Arguments @(
-    '-n', 'monitoring', 'rollout', 'status', 'deployment/vmalert', '--timeout=180s'
+    '-n', 'monitoring', 'rollout', 'status', 'deployment/alertmanager'
+)
+Invoke-Checked -Command 'kubectl' -Arguments @(
+    '-n', 'monitoring', 'rollout', 'status', 'deployment/vmalert'
 )
 
 $script:forwardProcesses = @()
-Start-PortForward -Name 'frontend' -Namespace 'cityguide' -Resource 'svc/frontend' -Mapping '8080:80' -LocalPort 8080
+& kubectl -n envoy-gateway-system get svc -l 'gateway.envoyproxy.io/owning-gateway-namespace=cityguide,gateway.envoyproxy.io/owning-gateway-name=cityguide' -o jsonpath='{.items[0].metadata.name}' | Set-Variable envoyService
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($envoyService)) {
+    throw 'Could not find the Envoy proxy Service for Gateway cityguide.'
+}
+Start-PortForward -Name 'envoy-gateway' -Namespace 'envoy-gateway-system' -Resource "svc/$envoyService" -Mapping '8080:80' -LocalPort 8080
 Start-PortForward -Name 'api' -Namespace 'cityguide' -Resource 'svc/api' -Mapping '8000:8000' -LocalPort 8000
 Start-PortForward -Name 'api-prober' -Namespace 'cityguide' -Resource 'deployment/api-prober' -Mapping '8001:8001' -LocalPort 8001
 Start-PortForward -Name 'postgres-metrics' -Namespace 'cityguide' -Resource 'svc/postgres' -Mapping '9187:9187' -LocalPort 9187
@@ -199,7 +219,7 @@ $script:forwardProcesses | ConvertTo-Json | Set-Content -LiteralPath $pidFile -E
 
 Write-Host ''
 Write-Host 'City Guide is ready:'
-Write-Host '  App:            http://localhost:8080'
+Write-Host '  App via Envoy:  http://localhost:8080'
 Write-Host '  API docs:       http://localhost:8000/docs'
 Write-Host '  Prober metrics: http://localhost:8001/metrics'
 Write-Host '  DB metrics:     http://localhost:9187/metrics'

@@ -1,4 +1,11 @@
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
+
+
+app_build_info = Gauge(
+    "cityguide_app_build_info",
+    "Build and pod identity for this API replica.",
+    ("version", "pod"),
+)
 
 
 cities_created = Counter(

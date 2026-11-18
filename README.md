@@ -258,7 +258,7 @@ docker compose up -d --build
 
 # Kubernetes / Minikube
 
-Манифесты в `k8s/` разворачивают приложение в namespace `cityguide`: PostgreSQL с PVC, API, frontend и Ingress. Миграция запускается init-контейнером API до старта сервера. Имена образов при сборке должны совпадать с манифестами: `city-backend:lf` и `city-frontend:api-proxy`.
+Манифесты в `k8s/` разворачивают приложение в namespace `cityguide`: PostgreSQL с PVC, три API-реплики в blue и green пулах, frontend и Envoy Gateway с Gateway API. Миграция запускается отдельной Job перед приложением. Имена образов при сборке должны совпадать с манифестами: `city-backend:lf` и `city-frontend:api-proxy`.
 
 ## Запуск приложения
 
@@ -270,7 +270,7 @@ docker compose up -d --build
 
 Скрипт открывает следующие адреса:
 
-- `http://localhost:8080` — frontend;
+- `http://localhost:8080` — frontend и API через Envoy Gateway;
 - `http://localhost:8000/docs` — API;
 - `http://localhost:8001/metrics` — метрики пробера;
 - `http://localhost:9187/metrics` — метрики PostgreSQL;
@@ -278,7 +278,7 @@ docker compose up -d --build
 - `http://localhost:8429/targets` — vmagent;
 - `http://localhost:9428/select/vmui/` — VictoriaLogs.
 
-Для остановки только запущенных скриптом port-forward’ов используйте `.\scripts\stop-port-forwards.ps1`. Сам кластер Minikube при этом остаётся запущенным. Nginx frontend пересылает `/api/` внутреннему Service API.
+Для демонстрации rolling, blue/green, canary, A/B и shadow стратегий с логом запросов используйте `.\scripts\demo-envoy-strategies.ps1`; описание и метрики находятся в [docs/envoy-strategies.md](docs/envoy-strategies.md). Для остановки только запущенных скриптом port-forward’ов используйте `.\scripts\stop-port-forwards.ps1`. Сам кластер Minikube при этом остаётся запущенным.
 
 После изменения исходников соберите образ заново и загрузите его в Minikube. Если тег образа не менялся, перезапустите Deployment, чтобы Pod использовал обновлённый локальный образ:
 
@@ -442,7 +442,7 @@ Invoke-RestMethod -Uri "http://localhost:8000/api/cities/$($city.id)" -Method De
 
 ## Оценка манифестов и 12 факторов
 
-Манифесты покрывают базовый учебный запуск, но пока не являются production-ready. Они задают Deployment/Service, Ingress, PostgreSQL PVC, probes, ConfigMap/Secret и init-контейнер миграций. Секрет содержит учебный пароль и хранится в YAML в репозитории; для реального окружения нужны внешнее управление секретами и непредсказуемые учётные данные. Не заданы requests/limits, политики безопасности, TLS, резервное копирование БД, мониторинг и масштабирование. Нет Kubernetes overlays/Helm chart для самого приложения; параметры окружения и образы в основном заданы напрямую.
+Манифесты покрывают учебный запуск. Они задают Deployments/Services, Envoy Gateway Gateway API, PostgreSQL PVC, probes, ConfigMap/Secret и отдельную Job миграции. Секрет содержит учебный пароль и хранится в YAML в репозитории; для реального окружения нужны внешнее управление секретами и непредсказуемые учётные данные. Не заданы requests/limits, политики безопасности, TLS и резервное копирование БД. Параметры окружения и образы в основном заданы напрямую.
 
 | 12-factor | Оценка |
 |---|---|
@@ -452,14 +452,14 @@ Invoke-RestMethod -Uri "http://localhost:8000/api/cities/$($city.id)" -Method De
 | 4. Backing services | PostgreSQL подключается через `DATABASE_URL`, но Compose и Kubernetes используют разные конфигурации и PVC управляется отдельно. |
 | 5. Build, release, run | Docker-образы и манифесты разделены; сборка/поставка пока ручные, теги `latest` не обеспечивают повторяемость релиза. |
 | 6. Processes | API stateless, состояние хранится в PostgreSQL; однорепличный Postgres требует бэкапов. |
-| 7. Port binding | FastAPI слушает 8000, Nginx — 80; Kubernetes открывает их через Services/Ingress. |
-| 8. Concurrency | API можно реплицировать; миграции выполняются при старте каждой новой реплики, что требует осторожности при одновременном rollout. |
+| 7. Port binding | FastAPI слушает 8000, frontend Nginx — 80; Kubernetes направляет запросы через Services и Envoy Gateway. |
+| 8. Concurrency | API работает в нескольких репликах; миграции запускаются отдельной Job до rollout. |
 | 9. Disposability | Контейнеры запускаются просто, но startup зависит от успешного подключения к БД и миграции. |
 | 10. Dev/prod parity | Compose и Minikube используют близкие сервисы, однако способы ingress, адрес frontend API и секреты различаются. |
 | 11. Logs | JSON логи API идут в stdout; сбор и хранение настроены отдельным VictoriaLogs Collector. |
-| 12. Admin processes | Alembic migration есть; других одноразовых административных задач пока нет. |
+| 12. Admin processes | Alembic выполняется отдельной Kubernetes Job до запуска новых версий API. |
 
-Для учебного проекта основа хорошая; наиболее важные улучшения для развёртывания — фиксированные версии образов, вынесение секретов, requests/limits и автоматическая проверка манифестов в CI. Ingress не переписывает `/api`, что корректно: маршруты FastAPI тоже начинаются с `/api`. Ошибка была в абсолютном URL API у frontend для Kubernetes, теперь путь берётся относительно адреса страницы.
+Для учебного проекта основа хорошая; наиболее важные улучшения для развёртывания — фиксированные версии образов, вынесение секретов, requests/limits и автоматическая проверка манифестов в CI. Envoy маршрутизирует `/api` без переписывания пути, что соответствует префиксу маршрутов FastAPI. Frontend использует адрес API относительно страницы.
 
 ---
 
